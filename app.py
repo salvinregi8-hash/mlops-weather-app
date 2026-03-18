@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
 import requests
 from datetime import datetime, timedelta
 import plotly.graph_objects as go
@@ -167,33 +166,51 @@ def fetch_recent_actuals(lat, lon):
     return df
 
 
+@st.cache_data(ttl=1800)
+def fetch_live_forecast(lat, lon):
+    url = "https://api.open-meteo.com/v1/forecast"
+    params = {
+        "latitude": lat,
+        "longitude": lon,
+        "hourly": "temperature_2m,relative_humidity_2m,precipitation,wind_speed_10m",
+        "forecast_days": 2,
+        "timezone": "Asia/Kolkata",
+    }
+
+    response = requests.get(url, params=params, timeout=30)
+    response.raise_for_status()
+
+    forecast_df = pd.DataFrame(response.json()["hourly"])
+    forecast_df["time"] = pd.to_datetime(forecast_df["time"])
+
+    now = pd.Timestamp.now(tz="Asia/Kolkata").tz_localize(None).floor("h")
+    forecast_df = forecast_df[forecast_df["time"] >= now].head(24).copy()
+    return forecast_df
+
+
 def make_forecast(name, lat, lon):
     try:
-        df = fetch_recent_actuals(lat, lon)
-        df["hour"] = df["time"].dt.hour
-        df["day_of_week"] = df["time"].dt.dayofweek
-        df = df.dropna(subset=["temperature_2m"]).copy()
+        df = fetch_recent_actuals(lat, lon).dropna(subset=["temperature_2m"]).copy()
+        live_forecast_df = fetch_live_forecast(lat, lon).dropna(subset=["temperature_2m"]).copy()
 
-        last_temp = df["temperature_2m"].iloc[-1]
-        trend = np.linspace(-1, 1, 24)
-        seed = int(abs(lat * 1000) + abs(lon * 1000))
-        noise = np.random.default_rng(seed).normal(0, 0.3, 24)
-        pred_temp = last_temp + trend + noise
-
-        last_time = df["time"].iloc[-1]
-        forecast_times = [last_time + timedelta(hours=i + 1) for i in range(24)]
-
-        forecast_df = pd.DataFrame({"time": forecast_times, "temperature": pred_temp})
+        forecast_df = live_forecast_df.rename(
+            columns={
+                "temperature_2m": "temperature",
+                "relative_humidity_2m": "humidity",
+                "precipitation": "precipitation",
+                "wind_speed_10m": "wind_speed",
+            }
+        )
         actuals_df = (
             df[["time", "temperature_2m"]]
             .tail(48)
             .rename(columns={"temperature_2m": "temperature"})
         )
 
-        return forecast_df, actuals_df, df
+        return forecast_df, actuals_df, df, live_forecast_df
     except Exception as exc:
         st.error(f"Forecast error for {name}: {exc}")
-        return None, None, None
+        return None, None, None, None
 
 
 def info_card(label, value):
@@ -264,7 +281,9 @@ def build_chart(location_name, actuals_df, forecast_df):
 
 
 def render_tab(name, details):
-    forecast_df, actuals_df, raw_df = make_forecast(name, details["lat"], details["lon"])
+    forecast_df, actuals_df, raw_df, live_forecast_df = make_forecast(
+        name, details["lat"], details["lon"]
+    )
 
     if forecast_df is None:
         st.warning("Could not generate forecast.")
@@ -273,9 +292,9 @@ def render_tab(name, details):
     latest_observed = actuals_df["temperature"].iloc[-1]
     forecast_min = forecast_df["temperature"].min()
     forecast_max = forecast_df["temperature"].max()
-    forecast_avg = forecast_df["temperature"].mean()
-    latest_humidity = raw_df["relative_humidity_2m"].dropna().iloc[-1]
-    latest_wind = raw_df["wind_speed_10m"].dropna().iloc[-1]
+    latest_humidity = live_forecast_df["relative_humidity_2m"].dropna().iloc[0]
+    latest_wind = live_forecast_df["wind_speed_10m"].dropna().iloc[0]
+    next_rain = live_forecast_df["precipitation"].fillna(0).head(24).max()
 
     st.markdown(f"### {name}")
     st.markdown(
@@ -291,6 +310,8 @@ def render_tab(name, details):
     with top_col3:
         info_card("Wind speed", f"{latest_wind:.1f} km/h")
 
+    st.caption("Forecast uses Open-Meteo live weather data for the next 24 hours.")
+
     st.plotly_chart(
         build_chart(name, actuals_df, forecast_df),
         use_container_width=True,
@@ -302,7 +323,7 @@ def render_tab(name, details):
     with metric_col2:
         metric_card("Next 24h high", f"{forecast_max:.1f} deg C", "Warmest predicted hour")
     with metric_col3:
-        metric_card("Next 24h average", f"{forecast_avg:.1f} deg C", "Mean forecast temperature")
+        metric_card("Rain chance signal", f"{next_rain:.1f} mm", "Peak hourly precipitation")
 
 
 st.markdown(

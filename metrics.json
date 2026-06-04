@@ -1,10 +1,10 @@
 {
   "technopark": {
-    "mae": 0.0712,
-    "rmse": 0.0928
+    "mae": 0.0692,
+    "rmse": 0.0885
   },
   "thampanoor": {
-    "mae": 0.0749,
-    "rmse": 0.096
+    "mae": 0.077,
+    "rmse": 0.0986
   }
 }
